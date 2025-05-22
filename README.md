@@ -2,7 +2,7 @@
 
 ## 1. Dependencies
 
-We implement our methods by PyTorch on NVIDIA A800 GPU. The dependencies is as bellow:
+We implement our methods by PyTorch on NVIDIA A800 GPU. The dependencies are as bellow:
 
 - [PyTorch](https://PyTorch.org/), version = 1.7.1
 - [CUDA](https://developer.nvidia.com/cuda-downloads), version = 11.0
