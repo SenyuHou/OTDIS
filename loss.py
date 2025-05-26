@@ -8,6 +8,7 @@ import math
 from numpy.testing import assert_array_almost_equal
 from sklearn.neighbors import LocalOutlierFactor
 from sklearn.mixture import GaussianMixture
+from sklearn.cluster import KMeans
 import warnings
 
 warnings.filterwarnings('ignore')
@@ -31,6 +32,27 @@ def ot_process(loss):
     loss = torch.from_numpy(loss).cuda().float()
     return loss, t_o
 
+def sample_space_smoothing(loss_tensor, k=3):
+    loss_np = loss_tensor.detach().cpu().numpy()  
+    N, M = loss_np.shape
+
+    kmeans = KMeans(n_clusters=k, random_state=0).fit(loss_np)
+    centers = kmeans.cluster_centers_  # (k, M)
+    labels = kmeans.labels_  # (N,)
+
+    distances = np.zeros(N)
+    for i in range(N):
+        center = centers[labels[i]]
+        distances[i] = np.linalg.norm(loss_np[i] - center)
+
+    weights = np.exp(-distances)
+    weights = weights.reshape((-1, 1))
+
+    smoothed_loss = loss_np * weights
+
+    smoothed_loss_tensor = torch.from_numpy(smoothed_loss).float().cuda()
+    return smoothed_loss_tensor
+
 
 def get_otdis_loss(epoch, before_loss_1, before_loss_2, sn_1, sn_2, y_1, y_2, t, ind, noise_or_not, co_lambda, loss_bound, gamma):
     s = torch.tensor(epoch + 1).float()
@@ -40,14 +62,16 @@ def get_otdis_loss(epoch, before_loss_1, before_loss_2, sn_1, sn_2, y_1, y_2, t,
     # ---------- Model 1 ----------
     loss_1 = F.cross_entropy(y_1, t, reduction='none')
     before_and_loss_1 = torch.cat((torch.from_numpy(before_loss_1).cuda().float(), loss_1.unsqueeze(1)), 1)
-    before_and_loss_1_hard, t_o_1 = ot_process(before_and_loss_1)
-    loss_1_mean = torch.mean(before_and_loss_1_hard, dim=1)
+    loss_ot1, t_o_1 = ot_process(before_and_loss_1)
+    loss_otdis_1 = sample_space_smoothing(loss_ot1)
+    loss_otdis_1_mean = torch.mean(loss_otdis_1, dim=1)
 
     # ---------- Model 2 ----------
     loss_2 = F.cross_entropy(y_2, t, reduction='none')
     before_and_loss_2 = torch.cat((torch.from_numpy(before_loss_2).cuda().float(), loss_2.unsqueeze(1)), 1)
-    before_and_loss_2_hard, t_o_2 = ot_process(before_and_loss_2)
-    loss_2_mean = torch.mean(before_and_loss_2_hard, dim=1)
+    loss_ot2, t_o_2 = ot_process(before_and_loss_2)
+    loss_otdis_2 = sample_space_smoothing(loss_ot2)
+    loss_otdis_2_mean = torch.mean(loss_otdis_2, dim=1)
 
     # ---------- GMM Co-Divide ----------
     def gmm_separate(loss_tensor):
@@ -61,8 +85,8 @@ def get_otdis_loss(epoch, before_loss_1, before_loss_2, sn_1, sn_2, y_1, y_2, t,
         noisy_idx = np.where(pred == noisy_component)[0]
         return clean_idx, noisy_idx
 
-    clean_1, noise_1 = gmm_separate(loss_1_mean)
-    clean_2, noise_2 = gmm_separate(loss_2_mean)
+    clean_1, noise_1 = gmm_separate(loss_otdis_1_mean)
+    clean_2, noise_2 = gmm_separate(loss_otdis_2_mean)
 
     # ---------- Pure ratio ----------
     pure_ratio_1 = np.sum(noise_or_not[ind[clean_1]]) / (len(clean_1) + 1e-6)
